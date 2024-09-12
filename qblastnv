@@ -1,0 +1,34 @@
+#!/usr/bin/env python
+import os
+import shutil
+import sys
+import tempfile
+
+if len(sys.argv) < 3:
+   print("usage qblastn ref seq")
+   exit(1)
+
+def command(str):
+   print('Command: ' + str)
+   p = None
+   try:
+      p = os.popen(str)
+      print(p.read())
+   except:
+      print('Caught Exception')
+   finally:
+      if p: p.close()
+
+refpath = sys.argv[1]
+tmpdir = tempfile.mkdtemp()
+print(tmpdir)
+try:
+   refbase = os.path.basename(refpath)
+   blastdb = "%s/%s" % (tmpdir, refbase)
+   cmd = 'makeblastdb -in %s -out %s -dbtype nucl' % (refpath, blastdb)
+   command(cmd)
+   for seq in sys.argv[2:]:
+      command('blastn -db %s -query %s' % (blastdb, seq))
+      #command('blastn -outfmt 6 -db %s -query %s' % (blastdb, seq))
+finally:
+   shutil.rmtree(tmpdir)

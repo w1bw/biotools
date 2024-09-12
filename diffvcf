@@ -1,0 +1,49 @@
+#!/usr/bin/env python
+
+import sys
+import gzip
+
+
+def loadvcf(path):
+    chroms = {}
+    vcf = gzip.open(path, 'rt') if path.endswith(".gz") else open(path, 'r')
+    for line in vcf:
+        if line[0] == '#':
+            continue
+        fields = line.strip().split("\t")
+        assert len(fields) >= 8, "not enought fields in VCF record: " + line
+        chrom, pos, id, ref, alt, qual, filt, info = fields[:8]
+        if filt != "PASS":
+            continue
+        if ref == "<DUP>" or alt == "<DUP>":
+            continue
+        if ref.find("N") >= 0 or alt.find("N") >= 0:
+            continue
+        if chrom not in chroms:
+            chroms[chrom] = {}
+        chroms[chrom][pos] = (ref, alt)
+    return chroms
+
+
+def diffvcf(chroms1, chroms2):
+    for chrom in chroms1:
+        if chrom not in chroms2:
+            continue
+        c1 = chroms1[chrom]
+        c2 = chroms2[chrom]
+        for pos in c1:
+            if pos not in c2:
+                continue
+            if c1[pos] != c2[pos]:
+                print(f"{chrom}\t{pos}\t{c1[pos][0]}\t{c1[pos][1]}\t{c2[pos][0]}\t{c2[pos][1]}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("usage: diffvcf first.vcf second.vcf")
+        exit(1)
+    vcf1 = loadvcf(sys.argv[1])
+    vcf2 = loadvcf(sys.argv[2])
+    print(f"CHROM\tPOS\tREF\tREF1\tALT1\tREF2\tALT2")
+    diffvcf(vcf1, vcf2)
+

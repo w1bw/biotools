@@ -1,0 +1,42 @@
+#!/usr/bin/env python
+import os
+import shutil
+import sys
+import tempfile
+import argparse
+
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--blastx", "-x", action="store_true", help="use blastx")
+parser.add_argument("--format", "-f", type=int, default=6, help="blast output format (default 6)")
+parser.add_argument("ref", help="reference fasta file")
+parser.add_argument("query", nargs="+", help="query fasta file(s)")
+args = parser.parse_args()
+
+
+def command(str):
+   print('Command: ' + str)
+   p = None
+   try:
+      p = os.popen(str)
+      print(p.read())
+   except:
+      print('Caught Exception')
+   finally:
+      if p: p.close()
+
+tmpdir = tempfile.mkdtemp()
+print(tmpdir)
+try:
+   refbase = os.path.basename(args.ref)
+   blastdb = "%s/%s" % (tmpdir, refbase)
+   dbtype = "prot" if args.blastx else "nucl"
+   cmd = 'makeblastdb -in %s -out %s -dbtype %s' % (args.ref, blastdb, dbtype)
+   command(cmd)
+   for seq in args.query:
+      #command('blastn -db %s -query %s' % (blastdb, seq))
+      blast = "blastx" if args.blastx else "blastn"
+      command('%s -outfmt %s -db %s -query %s' % (blast, args.format, blastdb, seq))
+finally:
+   shutil.rmtree(tmpdir)
