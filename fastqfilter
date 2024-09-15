@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+
+import sys
+import argparse
+import gzip
+import bz2
+import pysam
+from Bio import SeqIO
+import numpy as np
+
+
+def openSeqFile(fileName):
+    """
+    Open a sequence file with SeqIO; can be fasta or fastq with optional gz or bz2 compression.
+    Assumes fasta unless ".fastq" or ".fq" in the file name.
+    :param fileName:
+    :return: SeqIO.parse object
+    """
+
+    components = fileName.split(".")
+
+    if "bam" in components:
+        file = pysam.AlignmentFile(fileName, "rb", check_header=False, check_sq=False)
+
+        # generator for sequences in bam
+        def bamSequences():
+            for read in file.fetch(until_eof=True):
+                if not read.is_qcfail:
+                    yield read
+
+        return bamSequences()
+
+    if "bz2" in components:
+        file = bz2.BZ2File(fileName, "rt")
+    elif "gz" in components:
+        file = gzip.open(fileName, "rt")
+        SeqIO.parse(file, "fastq")
+    else:
+        file = open(fileName, "rt")
+    if "fastq" in components or "fq" in components:
+        fileType = "fastq"
+    else:
+        fileType = "fasta"
+    return SeqIO.parse(file, fileType)
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-o", "--output", help="output fastq file prefix")
+parser.add_argument(
+    "-f", "--fraction", type=float, default=1.0, help="fraction of input desired"
+)
+parser.add_argument("-b", "--bases", type=int, default=0, help="total bases desired")
+parser.add_argument(
+    "-l", "--length", type=int, default=0, help="keep reads of at least this length"
+)
+parser.add_argument(
+    "-r", "--readnames", type=str, help="file containing read names to keep"
+)
+parser.add_argument(
+    "-q", "--qual", type=float, default=1.0, help="keep reads of at least this quality"
+)
+parser.add_argument("input", help="input fastq file")
+args = parser.parse_args()
+
+total = 0
+keepers = []
+done = False
+fastq = False
+
+readnames = set()
+
+if args.readnames:
+    with open(args.readnames, "r") as names:
+        for name in names:
+            readnames.add(name.strip())
+
+for read in openSeqFile(args.input):
+    if args.readnames and read.id not in readnames:
+        continue
+
+    length = len(read)
+    if length < args.length:
+        continue
+
+    if done and length < args.longlength:
+        continue
+
+    if "phred_quality" in read.letter_annotations:
+        fastq = True
+        q = np.array(read.letter_annotations["phred_quality"])
+        eq = -10.0 * np.log10(np.mean(np.power(10.0, -q / 10.0)))
+        if eq < args.qual:
+            continue
+
+    keepers.append(read)
+    total += length
+
+    done = args.bases and total >= args.bases
+
+    if done and not args.longlength:
+        break
+
+if keepers:
+    if args.output:
+        output = open(args.output, "w")
+    else:
+        output = sys.stdout
+
+    SeqIO.write(keepers, output, "fastq" if fastq else "fasta")

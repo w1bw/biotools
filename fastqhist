@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+
+import argparse
+import sys
+import gzip
+import bz2
+import pysam
+from Bio import SeqIO
+import numpy as np
+
+
+def openSeqFile(fileName):
+    """
+    Open a sequence file with SeqIO; can be fasta or fastq with optional gz or bz2 compression.
+    Assumes fasta unless ".fastq" or ".fq" in the file name.
+    :param fileName:
+    :return: SeqIO.parse object
+    """
+
+    components = fileName.split(".")
+
+    if "bam" in components:
+        file = pysam.AlignmentFile(fileName, "rb", check_header=False, check_sq=False)
+
+        # generator for sequences in bam
+        def bamSequences():
+            for read in file.fetch(until_eof=True):
+                if not read.is_qcfail:
+                    yield read
+
+        return bamSequences()
+
+    if "bz2" in components:
+        file = bz2.BZ2File(fileName, "rt")
+    elif "gz" in components:
+        file = gzip.open(fileName, "rt")
+        SeqIO.parse(file, "fastq")
+    else:
+        file = open(fileName, "rt")
+    if "fastq" in components or "fq" in components:
+        fileType = "fastq"
+    else:
+        fileType = "fasta"
+    return SeqIO.parse(file, fileType)
+
+
+def readhist(read):
+    global qhist
+    quals = np.array(read.letter_annotations["phred_quality"])
+    qhist = np.histogram(quals, bins=64, range=(0,64))
+    eq = -10.0 * np.log10(np.mean(np.power(10.0, -quals / 10.0)))
+    return eq, qhist
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-o", "--output", help="output histogram file (tsv)")
+#parser.add_argument("-q", "--qhist", action='store_true', help="output base quality histogram")
+parser.add_argument("inputs", nargs='+', help="input fastq file(s)")
+args = parser.parse_args()
+
+outfile = open(args.output, 'w') if args.output else sys.stdout
+
+minsize = 0
+print(
+    "q\treads\tbases",
+    file=outfile
+)
+
+for f in args.inputs:
+    read_eqs = []
+    hist = None
+    bhist = np.zeros(64)
+    rhist = np.zeros(64)
+    for read in openSeqFile(f):
+        eq, (hist, bins) = readhist(read)
+        read_eqs.append(eq)
+        bhist += hist
+    rhist, rbins = np.histogram(read_eqs, bins=64, range=(0,64))
+    for q in range(bhist.size):
+        print(f"{q}\t{int(rhist[q])}\t{int(bhist[q])}")
+
