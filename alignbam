@@ -1,0 +1,165 @@
+#!/bin/bash
+PATH=~bruce/bin:$PATH
+jump=0
+reverse=0
+straingr=0
+threads=`cpus`
+aligner=mem
+filter=''
+optstring="jrst:a:F:"
+while getopts $optstring opt; do
+    case $opt in 
+	j)
+	    jump=1
+	    ;;
+	u)
+	    unpaired=1
+	    ;;
+	F)
+	    filter="-F $OPTARG"
+	    ;;
+	r)
+	    reverse=1
+	    ;;
+	t)
+	    threads=$OPTARG
+	    ;;
+	s)
+	    straingr=1
+	    aligner="bt2"
+	    ;;
+	a)
+	    aligner=$OPTARG
+	    ;;
+	\?)
+	    echo Invalid option -$OPTARG
+	    ;;
+    esac
+done
+shift $((OPTIND-1))
+
+if [ $# -lt 3 ]; then
+    echo 'usage: alignbam [-j] [-a <aligner:bwa|bowtie2>] [-t <threads>] ref input.bam out_prefix'
+    exit 1
+fi
+
+
+ref=$1
+in=$2
+out=$3
+d=`pwd`
+export TMPDIR=$d
+tmp=`mktemp -d alignbam.XXXXX`
+
+function extract_fastq {
+    picard SamToFastq INCLUDE_NON_PF_READS=True I=$in F=$1 F2=$2
+}
+
+function do_bwa {
+    echo ========== bwa ==========
+    if [ ! -f $ref.bwt ]; then
+	echo `date` indexing $ref
+	bwa index $ref
+    fi
+    sai1=$tmp/1.sai
+    sai2=$tmp/2.sai
+    echo `date` extracting fastqs
+    read1=$tmp/1.fastq
+    read2=$tmp/2.fastq
+    extract_fastq $read1 $read2
+    if [ $reverse -gt 0 ]; then
+	echo `date` reversing fastqs
+	rcfastq.py $read1 $tmp/1rc.fastq &
+	rcfastq.py $read2 $tmp/2rc.fastq &
+	read1=$tmp/1rc.fastq
+	read2=$tmp/2rc.fastq
+	wait
+	echo `date` generating initial alignments
+	bwa aln -t $threads $ref $read1 >$sai1
+	bwa aln -t $threads $ref $read2 >$sai2
+	jumpargs=""
+    else
+	echo `date` generating initial alignments
+	bwa aln -t $threads $ref $read1 >$sai1
+	bwa aln -t $threads $ref $read2 >$sai2
+	jumpargs=""
+    fi
+    echo `date` creating unsorted bam
+    # -t $threads 
+    bwa sampe $jumpargs $ref $sai1 $sai2 $read1 $read2 \
+	| samtools view -f 12 -U unsorted..bam - >/dev/null
+}
+
+function do_mem {
+    echo ========== bwa mem ==========
+    if [ ! -f $ref.bwt ]; then
+	echo `date` indexing $ref
+	bwa index $ref
+    fi
+    echo `date` extracting fastqs
+    read1=$tmp/1.fastq
+    read2=$tmp/2.fastq
+    extract_fastq $read1 $read2
+    bwa mem -t $threads $ref $read1 $read2 \
+	| samtools view -f 12 -U $tmp/unsorted.bam - >/dev/null
+}
+
+function do_bowtie2 {
+    echo ========== bowtie2 ==========
+    if [ ! -f $ref.1.bt2 ]; then
+	echo `date` indexing $ref
+	bowtie2-build $ref $ref
+    fi
+    echo `date` extracting fastqs
+    read1=$tmp/1.fastq
+    read2=$tmp/2.fastq
+    extract_fastq $read1 $read2
+    if [ $jump -gt 0 ]; then
+	jumpargs="-I 500 -X 10000 --local"
+    fi
+    if [ $straingr -gt 0 ]; then
+	jumpargs="-X 700 --no-unal"
+    fi
+    if [ $reverse -gt 0 ]; then
+	echo `date` reversing fastqs
+	rcfastq.py $read1 $tmp/1rc.fastq &
+	rcfastq.py $read2 $tmp/2rc.fastq &
+	read1=$tmp/1rc.fastq
+	read2=$tmp/2rc.fastq
+	wait
+    fi
+    echo `date` creating unsorted bam
+    bowtie2 $jumpargs -p $threads -x $ref -1 $read1 -2 $read2 \
+	| samtools view -f 12 -U $tmp/unsorted..bam - >/dev/null
+}
+
+case $aligner in
+    mem)
+	do_mem
+	;;
+    bwa)
+	do_bwa
+	;;
+    bowtie|bowtie2|bt|bt2)
+	do_bowtie2
+	;;
+    *)
+	echo unknown aligner $aligner
+	rm -rf $tmp
+	exit 1
+	;;
+esac
+
+echo `date` sorting bam
+samtools sort -m 4G $tmp/unsorted.bam -o $tmp/sorted.bam
+
+echo `date` marking duplicates
+picard MarkDuplicates I=$tmp/sorted.bam O=$out.bam M=markduplicates.txt
+
+echo `date` indexing bam
+samtools index $out.bam
+
+echo `date` done
+rm -rf $tmp
+
+
